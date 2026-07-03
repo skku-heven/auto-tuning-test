@@ -1,0 +1,9 @@
+# ad_autotune best params (synthetic oval track)
+# evaluated 126 param sets
+# completed=True driving_score=100.0 time_s=104.8 max_cte=3.21
+lookahead: 6.000
+target_velocity_kph: 48.37
+gain_k: 1.500
+pid_kp: 0.417
+pid_ki: 0.0
+pid_kd: 0.05

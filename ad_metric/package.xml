@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!-- [transferable-to-heven_ad] -->
+<package format="2">
+  <name>ad_metric</name>
+  <version>0.0.1</version>
+  <description>Metric calculation from rosbag for MORAI test runs.</description>
+  <maintainer email="heven@todo.todo">heven</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>rospy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>morai_msgs</depend>
+  <exec_depend>rosbag</exec_depend>
+</package>

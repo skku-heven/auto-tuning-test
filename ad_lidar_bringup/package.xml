@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!-- [transferable-to-heven_ad] -->
+<package format="2">
+  <name>ad_lidar_bringup</name>
+  <version>0.0.1</version>
+  <description>LiDAR bringup for MORAI Velodyne UDP using installed velodyne ROS packages.</description>
+  <maintainer email="heven@todo.todo">heven</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>velodyne_driver</exec_depend>
+  <exec_depend>velodyne_pointcloud</exec_depend>
+  <exec_depend>velodyne_msgs</exec_depend>
+</package>

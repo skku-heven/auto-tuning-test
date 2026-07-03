@@ -1,0 +1,21 @@
+<!-- [transferable-to-heven_ad] -->
+<launch>
+  <arg name="csv_path" default="$(find ad_tracker)/csv/global_path.csv" />
+  <arg name="lookahead" default="3.0" />
+  <arg name="target_velocity_kph" default="20.0" />
+  <arg name="gain_k" default="0.5" />
+  <arg name="pid_kp" default="0.3" />
+  <arg name="pid_ki" default="0.0" />
+  <arg name="pid_kd" default="0.01" />
+
+  <node name="ad_tracker" pkg="ad_tracker" type="ad_tracker" output="screen">
+    <param name="csv_path" value="$(arg csv_path)" />
+    <param name="lookahead" value="$(arg lookahead)" />
+    <param name="target_velocity_kph" value="$(arg target_velocity_kph)" />
+    <param name="gain_k" value="$(arg gain_k)" />
+    <param name="pid_kp" value="$(arg pid_kp)" />
+    <param name="pid_ki" value="$(arg pid_ki)" />
+    <param name="pid_kd" value="$(arg pid_kd)" />
+    <remap from="~command" to="/ctrl_cmd" />
+  </node>
+</launch>

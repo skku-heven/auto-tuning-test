@@ -1,0 +1,17 @@
+<!-- [transferable-to-heven_ad] -->
+<launch>
+  <arg name="with_tf" default="true" />
+  <arg name="with_lidar" default="true" />
+
+  <!-- UDP bridge for MORAI vehicle status, collision, and ctrl_cmd. -->
+  <include file="$(find ad_udp)/launch/udp_bridge.launch" />
+
+  <!-- GPS + IMU to Pose2D. -->
+  <include file="$(find ad_pose_parser)/launch/ad_pose_parser.launch" />
+
+  <!-- TF tree: world/map/odom/base_link/sensors. -->
+  <include if="$(arg with_tf)" file="$(find ad_tf2_broadcaster)/launch/ad_tf2_broadcast.launch" />
+
+  <!-- Velodyne UDP receivers and pointcloud conversion. -->
+  <include if="$(arg with_lidar)" file="$(find ad_lidar_bringup)/launch/lidar.launch" />
+</launch>

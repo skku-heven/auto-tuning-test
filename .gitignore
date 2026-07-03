@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# catkin
+build/
+devel/
+.catkin_tools/
+logs/
+
+# 튜닝 산출물(런타임 생성)
+results/live_tune/
+*.db
+*.bag

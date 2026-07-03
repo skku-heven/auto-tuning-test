@@ -1,0 +1,19 @@
+<!-- [transferable-to-heven_ad] -->
+<launch>
+        <arg name="file_name" default="carla_yesun"/>
+        <arg name="carla" default="true"/>
+
+        <arg name="imu_topic_name" value="/imu/data" unless="$(arg carla)"/>
+        <arg name="imu_topic_name" value="/imu" if="$(arg carla)"/>
+
+        
+        <node pkg="ad_pose_parser" name="ad_pose_parser" type="ad_pose_parser" output="screen">
+                <!--subscribe-->
+                <remap from="~gps" to="/gps"/>
+                <remap from="~heading" to="$(arg imu_topic_name)"/>
+                <!--publish-->
+                <remap from="~state" to="/ad_pose_parser/pose"/>
+                <!-- CARLA Simulator Selection -->
+                <param name="carla_simulator" value="$(arg carla)"/>
+        </node>
+</launch>

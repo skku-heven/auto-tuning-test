@@ -1,0 +1,67 @@
+# [transferable-to-heven_ad]
+# static frame
+map:
+  t_x: 0    # unit: [m]
+  t_y: 0    # unit: [m]
+  t_z: 0    # unit: [m]
+  r_x: 0    # unit: [rad]
+  r_y: 0    # unit: [rad]
+  r_z: 0    # unit: [rad]
+  parent_id:  "world"
+  frame_id:   "map"
+
+base_link:
+  t_x: 0    
+  t_y: 0
+  t_z: 0
+  r_x: 0
+  r_y: 0
+  r_z: 0
+  parent_id:  "odom"
+  frame_id:   "base_link"
+
+velodyne1:
+  t_x: -0.7
+  t_y: 0
+  t_z: 1.0
+  r_x: 0
+  r_y: 0
+  r_z: 0
+  parent_id:  "base_link"
+  frame_id:   "velodyne1"
+
+velodyne2:
+  t_x: -3.3
+  t_y: 0
+  t_z: 1.0
+  r_x: 0
+  r_y: 0
+  r_z: 0
+  parent_id:  "base_link"
+  frame_id:   "velodyne2"
+
+carla:
+  t_x: 0.415
+  t_y: 0
+  t_z: 1.0
+  r_x: 0
+  r_y: 0
+  r_z: 0
+  parent_id:  "base_link"
+  frame_id:   "ego_vehicle/lidar"
+  
+imu:
+  t_x: 0.0
+  t_y: 0.0
+  t_z: 0.0
+  r_x: 0
+  r_y: 0
+  r_z: 0
+  parent_id:  "base_link"
+  frame_id:   "imu"
+
+# moving frame
+odom:
+  parent_id:  "map"
+  frame_id:   "odom"
+

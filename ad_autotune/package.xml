@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ad_autotune</name>
+  <version>0.0.1</version>
+  <description>
+    Auto-tuning harness for the ad_tracker Stanley controller.
+    Offline mode (bicycle-model plant) proves the tuning workflow without MORAI;
+    live mode tunes against the running simulator over the ROS bridge.
+  </description>
+  <maintainer email="heven@skku.edu">HEVEN</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- live mode only; offline mode is pure-stdlib python -->
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>morai_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+</package>
