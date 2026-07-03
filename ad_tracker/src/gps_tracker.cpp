@@ -211,7 +211,9 @@ morai_msgs::CtrlCmd GpsTracker::Stanley(const geometry_msgs::Pose2D& pose,
   command.longlCmdType = 1;
   command.accel = clamp(accel_cmd, 0.0, 1.0);
   command.brake = speed_error < -1.0 ? clamp(-accel_cmd, 0.0, 1.0) : 0.0;
-  command.front_steer = clamp(steering_angle, -max_steer_rad, max_steer_rad);
+  const double front = clamp(steering_angle, -max_steer_rad, max_steer_rad);
+  command.front_steer = front;
+  command.steering = front / max_steer_rad;  // 정규화 [-1,1]. MORAI 25.S4는 steering 필드를 봄(front_steer 무시)
   command.rear_steer = 0.0;
   command.velocity = impl_->target_velocity_kph;
   command.acceleration = 0.0;
