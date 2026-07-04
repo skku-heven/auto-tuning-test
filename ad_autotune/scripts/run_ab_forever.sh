@@ -3,11 +3,12 @@
 #   run_ab_forever.sh <hours|forever> [smoke]
 #   HOURS가 0/forever/-1 이면 멈출 때까지 무제한(tmux/kill로 정지).
 # DB: OPTUNA_STORAGE 지정 시 그 URL 사용(예: postgresql://user:pw@host/db). 미지정 시 sqlite.
-set -u
 HOURS="${1:-forever}"; SMOKE="${2:-25}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# ROS setup.bash는 unbound var를 쓰므로 set -u는 소싱 뒤에
 source /opt/ros/noetic/setup.bash
 source "$HOME/auto_tuning_ws/devel/setup.bash"   # 독립 ws (C++ ad_tracker 빌드본 포함)
+set -u
 STOR_ARG=()
 [ -n "${OPTUNA_STORAGE:-}" ] && STOR_ARG=(--storage "$OPTUNA_STORAGE")
 
