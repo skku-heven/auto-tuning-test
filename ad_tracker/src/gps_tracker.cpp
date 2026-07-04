@@ -27,6 +27,9 @@ constexpr double kVMinKph = 5.0;
 constexpr double kVMaxKph = 60.0;
 constexpr int kCurvSmooth = 5;
 constexpr std::size_t kNearestWindow = 200;
+constexpr double kJumpReseedDist = 20.0;  // m. 이보다 멀면 텔레포트로 보고 global 재시드
+constexpr double kLaunchRampSec = 4.0;    // 발진 램프: 5kph→target을 4초에 걸쳐(풀스로틀 발진 이탈 방지)
+constexpr double kLaunchRampFromKph = 5.0;
 
 double normalizeAngle(double angle)
 {
@@ -73,8 +76,10 @@ struct GpsTracker::Impl
   std::size_t cur = 0;   // monotonic nearest 인덱스
   bool seeded = false;   // 첫 pose에서 global nearest로 시드
   double prev_steer = 0.0;
+  ros::Time first_cmd_time;  // 발진 램프 기준점
 
   void buildProfile();
+  void seedNearest(const geometry_msgs::Pose2D& pose);
 };
 
 void GpsTracker::Impl::buildProfile()
@@ -130,6 +135,19 @@ void GpsTracker::Impl::buildProfile()
   }
 }
 
+void GpsTracker::Impl::seedNearest(const geometry_msgs::Pose2D& pose)
+{
+  double best = std::numeric_limits<double>::infinity();
+  for (std::size_t i = 0; i < waypoints.size(); ++i) {
+    const double d = std::hypot(waypoints[i].x - pose.x, waypoints[i].y - pose.y);
+    if (d < best) {
+      best = d;
+      cur = i;
+    }
+  }
+  seeded = true;
+}
+
 GpsTracker::GpsTracker() : impl_(new Impl) {}
 GpsTracker::~GpsTracker() = default;
 
@@ -157,6 +175,7 @@ nav_msgs::Path GpsTracker::Init(const std::string& pathfile,
   impl_->cur = 0;
   impl_->seeded = false;
   impl_->prev_steer = 0.0;
+  impl_->first_cmd_time = ros::Time();
 
   std::ifstream file(pathfile);
   if (!file.is_open()) {
@@ -228,15 +247,7 @@ morai_msgs::CtrlCmd GpsTracker::Stanley(const geometry_msgs::Pose2D& pose,
   const std::size_t n = wp.size();
 
   if (!impl_->seeded) {
-    double best = std::numeric_limits<double>::infinity();
-    for (std::size_t i = 0; i < n; ++i) {
-      const double d = std::hypot(wp[i].x - pose.x, wp[i].y - pose.y);
-      if (d < best) {
-        best = d;
-        impl_->cur = i;
-      }
-    }
-    impl_->seeded = true;
+    impl_->seedNearest(pose);
   }
 
   // windowed monotonic nearest
@@ -251,6 +262,13 @@ morai_msgs::CtrlCmd GpsTracker::Stanley(const geometry_msgs::Pose2D& pose,
       best_d2 = d2;
       near = i;
     }
+  }
+  if (best_d2 > kJumpReseedDist * kJumpReseedDist) {  // 텔레포트/리셋 감지 → 재시드
+    impl_->seedNearest(pose);
+    near = impl_->cur;
+    impl_->prev_steer = 0.0;
+    impl_->first_cmd_time = ros::Time();
+    ROS_WARN("ad_tracker: pose jump detected, reseeded nearest=%zu", near);
   }
   impl_->cur = near;
 
@@ -296,8 +314,16 @@ morai_msgs::CtrlCmd GpsTracker::Stanley(const geometry_msgs::Pose2D& pose,
   steering_angle = clamp(steering_angle, impl_->prev_steer - ds_max, impl_->prev_steer + ds_max);
   impl_->prev_steer = steering_angle;
 
-  // 종방향: 프로파일 governed 목표속도에 PID
-  const double v_ref = std::min(impl_->target_velocity_kph, impl_->profile_kph[near]);
+  // 종방향: 프로파일 governed 목표속도에 PID (+ 발진 램프)
+  if (impl_->first_cmd_time.isZero()) {
+    impl_->first_cmd_time = now;
+  }
+  const double t_run = (now - impl_->first_cmd_time).toSec();
+  const double ramp = std::min(t_run / kLaunchRampSec, 1.0);
+  const double ramp_target =
+      std::min(impl_->target_velocity_kph,
+               kLaunchRampFromKph + (impl_->target_velocity_kph - kLaunchRampFromKph) * ramp);
+  const double v_ref = std::min(ramp_target, impl_->profile_kph[near]);
   const double speed_error = v_ref - current_velocity_kph;
   double accel_cmd = impl_->pid_kp * speed_error;
   if (!impl_->prev_time.isZero()) {

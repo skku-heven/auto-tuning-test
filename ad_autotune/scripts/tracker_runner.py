@@ -125,9 +125,9 @@ class TrackerRunner:
         while self.rospy.get_time() - t0 < ready_timeout:
             if self.proc.poll() is not None:
                 return False                       # 기동 실패(즉사)
-            if self.cmd["n"] >= n0 + 3:            # 첫 명령 몇 개 확인 = pose 수신+제어 시작
+            if self.cmd["n"] >= n0 + 1:            # 첫 명령 = pose 수신+제어 시작(관찰 공백 최소화)
                 return True
-            self.rospy.sleep(0.1)
+            self.rospy.sleep(0.05)
         return False
 
     # ---------- LiveRunner 호환 인터페이스 ----------
@@ -162,6 +162,10 @@ class TrackerRunner:
             except Exception:
                 pass
         rospy.sleep(0.5)
+        # 텔레포트가 속도를 안 0으로 만들었을 수 있음 → 브레이크로 bleed(트래커 없을 때만 안전)
+        t0 = rospy.get_time()
+        while rospy.get_time() - t0 < 3.0 and self.st["v"] > 0.5:
+            self._stop_car()
         return True
 
     def _stop_car(self):
