@@ -23,6 +23,8 @@ public:
     double lookahead = 3.0;
     double target_velocity_kph = 20.0;
     double gain_k = 0.5;
+    double k_soft = 1.0;
+    double a_lat = 1.5;
     double pid_kp = 0.3;
     double pid_ki = 0.0;
     double pid_kd = 0.01;
@@ -33,6 +35,8 @@ public:
     nh.param("lookahead", lookahead, lookahead);
     nh.param("target_velocity_kph", target_velocity_kph, target_velocity_kph);
     nh.param("gain_k", gain_k, gain_k);
+    nh.param("k_soft", k_soft, k_soft);
+    nh.param("a_lat", a_lat, a_lat);
     nh.param("pid_kp", pid_kp, pid_kp);
     nh.param("pid_ki", pid_ki, pid_ki);
     nh.param("pid_kd", pid_kd, pid_kd);
@@ -42,7 +46,8 @@ public:
       throw std::runtime_error("csv_path parameter is required");
     }
 
-    path_ = tracker_.Init(csv_path, lookahead, target_velocity_kph, gain_k, pid_kp, pid_ki, pid_kd);
+    path_ = tracker_.Init(csv_path, lookahead, target_velocity_kph, gain_k, k_soft, a_lat,
+                          pid_kp, pid_ki, pid_kd);
     command_pub_ = nh.advertise<morai_msgs::CtrlCmd>("command", 1);
     path_pub_ = nh.advertise<nav_msgs::Path>("/ad_tracker/path", 1, true);
     target_pub_ = nh.advertise<visualization_msgs::Marker>("/ad_tracker/target", 1);

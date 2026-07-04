@@ -38,11 +38,12 @@ public:
                       double lookahead_m,
                       double target_velocity_kph,
                       double stanley_gain,
+                      double k_soft,
+                      double a_lat,
                       double pid_kp,
                       double pid_ki,
                       double pid_kd);
 
-  TargetInfo FindTarget(const geometry_msgs::Pose2D& pose) const;
   morai_msgs::CtrlCmd Stanley(const geometry_msgs::Pose2D& pose,
                               double current_velocity_kph,
                               TargetInfo& target);

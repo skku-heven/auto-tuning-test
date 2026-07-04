@@ -1,4 +1,11 @@
 // [transferable-to-heven_ad]
+// governed-Stanley: ad_autotune/scripts/ad_control.py(GovernedStanley+build_profile)와 동등.
+//  - windowed monotonic nearest (global nearest는 경로 재접근 구간에서 오점착)
+//  - signed cte at nearest segment (cte>0 = 경로 우측 → 좌조향 +)
+//  - Stanley 분모 = k_soft + 측정속도[m/s]
+//  - arc-length lookahead로 heading preview
+//  - 곡률 기반 속도 프로파일(a_lat) + decel/accel 패스
+//  - 조향 슬루 제한 120°/s
 #include "ad_tracker/gps_tracker.h"
 
 #include <algorithm>
@@ -12,6 +19,15 @@ namespace ad_tracker
 {
 namespace
 {
+constexpr double kMaxSteerRad = 40.0 * M_PI / 180.0;
+constexpr double kSteerRate = 120.0 * M_PI / 180.0;  // rad/s
+constexpr double kADecel = 2.5;                      // m/s^2 (차량 물리 한계, 고정)
+constexpr double kAAccel = 2.0;
+constexpr double kVMinKph = 5.0;
+constexpr double kVMaxKph = 60.0;
+constexpr int kCurvSmooth = 5;
+constexpr std::size_t kNearestWindow = 200;
+
 double normalizeAngle(double angle)
 {
   while (angle > M_PI) {
@@ -41,16 +57,78 @@ struct GpsTracker::Impl
 {
   std::vector<Waypoint> waypoints;
   nav_msgs::Path path;
+  std::vector<double> s;            // 누적 arc length [m]
+  std::vector<double> profile_kph;  // 곡률 governed 속도 상한 [kph]
   double lookahead_m = 3.0;
   double target_velocity_kph = 20.0;
   double stanley_gain = 0.5;
+  double k_soft = 1.0;
+  double a_lat = 1.5;
   double pid_kp = 0.3;
   double pid_ki = 0.0;
   double pid_kd = 0.01;
   double pid_integral = 0.0;
   double pid_prev_error = 0.0;
-  ros::Time pid_prev_time;
+  ros::Time prev_time;
+  std::size_t cur = 0;   // monotonic nearest 인덱스
+  bool seeded = false;   // 첫 pose에서 global nearest로 시드
+  double prev_steer = 0.0;
+
+  void buildProfile();
 };
+
+void GpsTracker::Impl::buildProfile()
+{
+  const std::size_t n = waypoints.size();
+  s.assign(n, 0.0);
+  for (std::size_t i = 1; i < n; ++i) {
+    s[i] = s[i - 1] +
+           std::hypot(waypoints[i].x - waypoints[i - 1].x, waypoints[i].y - waypoints[i - 1].y);
+  }
+
+  // 3점 외접원 곡률 (i-2, i, i+2)
+  std::vector<double> kappa(n, 0.0);
+  for (std::size_t i = 2; i + 2 < n; ++i) {
+    const auto& a = waypoints[i - 2];
+    const auto& b = waypoints[i];
+    const auto& c = waypoints[i + 2];
+    const double A = std::hypot(b.x - a.x, b.y - a.y);
+    const double B = std::hypot(c.x - b.x, c.y - b.y);
+    const double C = std::hypot(c.x - a.x, c.y - a.y);
+    if (A * B * C < 1e-9) {
+      continue;
+    }
+    const double area = std::abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2.0;
+    kappa[i] = 4.0 * area / (A * B * C);
+  }
+
+  // 보수적 스무딩(윈도우 max) 후 v = sqrt(a_lat/kappa)
+  const double v_min = kVMinKph / 3.6;
+  const double v_max = kVMaxKph / 3.6;
+  std::vector<double> v(n, v_max);
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t lo = i > static_cast<std::size_t>(kCurvSmooth) ? i - kCurvSmooth : 0;
+    const std::size_t hi = std::min(n - 1, i + kCurvSmooth);
+    double k_worst = 0.0;
+    for (std::size_t j = lo; j <= hi; ++j) {
+      k_worst = std::max(k_worst, kappa[j]);
+    }
+    v[i] = clamp(std::sqrt(a_lat / std::max(k_worst, 1e-6)), v_min, v_max);
+  }
+  for (std::size_t i = n - 1; i-- > 0;) {  // backward: 감속 한계
+    const double ds = s[i + 1] - s[i];
+    v[i] = std::min(v[i], std::sqrt(v[i + 1] * v[i + 1] + 2.0 * kADecel * ds));
+  }
+  for (std::size_t i = 1; i < n; ++i) {    // forward: 가속 한계
+    const double ds = s[i] - s[i - 1];
+    v[i] = std::min(v[i], std::sqrt(v[i - 1] * v[i - 1] + 2.0 * kAAccel * ds));
+  }
+
+  profile_kph.assign(n, kVMaxKph);
+  for (std::size_t i = 0; i < n; ++i) {
+    profile_kph[i] = v[i] * 3.6;
+  }
+}
 
 GpsTracker::GpsTracker() : impl_(new Impl) {}
 GpsTracker::~GpsTracker() = default;
@@ -59,6 +137,8 @@ nav_msgs::Path GpsTracker::Init(const std::string& pathfile,
                                 double lookahead_m,
                                 double target_velocity_kph,
                                 double stanley_gain,
+                                double k_soft,
+                                double a_lat,
                                 double pid_kp,
                                 double pid_ki,
                                 double pid_kd)
@@ -66,12 +146,17 @@ nav_msgs::Path GpsTracker::Init(const std::string& pathfile,
   impl_->lookahead_m = lookahead_m;
   impl_->target_velocity_kph = target_velocity_kph;
   impl_->stanley_gain = stanley_gain;
+  impl_->k_soft = k_soft;
+  impl_->a_lat = a_lat;
   impl_->pid_kp = pid_kp;
   impl_->pid_ki = pid_ki;
   impl_->pid_kd = pid_kd;
   impl_->pid_integral = 0.0;
   impl_->pid_prev_error = 0.0;
-  impl_->pid_prev_time = ros::Time();
+  impl_->prev_time = ros::Time();
+  impl_->cur = 0;
+  impl_->seeded = false;
+  impl_->prev_steer = 0.0;
 
   std::ifstream file(pathfile);
   if (!file.is_open()) {
@@ -91,13 +176,20 @@ nav_msgs::Path GpsTracker::Init(const std::string& pathfile,
     std::stringstream ss(line);
     std::string item;
     std::vector<double> values;
+    bool bad_line = false;
     while (std::getline(ss, item, ',')) {
-      if (!item.empty()) {
+      if (item.empty()) {
+        continue;
+      }
+      try {
         values.push_back(std::stod(item));
+      } catch (const std::exception&) {
+        bad_line = true;  // 헤더행(x,y,...) 등 숫자 아님 → 라인 스킵
+        break;
       }
     }
 
-    if (values.size() < 2) {
+    if (bad_line || values.size() < 2) {
       continue;
     }
 
@@ -117,113 +209,127 @@ nav_msgs::Path GpsTracker::Init(const std::string& pathfile,
     impl_->path.poses.push_back(pose);
   }
 
-  if (impl_->waypoints.size() < 2) {
-    throw std::runtime_error("path csv must contain at least two waypoints: " + pathfile);
+  if (impl_->waypoints.size() < 5) {
+    throw std::runtime_error("path csv must contain at least five waypoints: " + pathfile);
   }
 
-  ROS_INFO("ad_tracker loaded %zu waypoints from %s", impl_->waypoints.size(), pathfile.c_str());
+  impl_->buildProfile();
+  ROS_INFO("ad_tracker loaded %zu waypoints from %s (lookahead=%.2f v=%.1f k=%.2f k_soft=%.2f a_lat=%.2f)",
+           impl_->waypoints.size(), pathfile.c_str(), lookahead_m, target_velocity_kph,
+           stanley_gain, k_soft, a_lat);
   return impl_->path;
-}
-
-TargetInfo GpsTracker::FindTarget(const geometry_msgs::Pose2D& pose) const
-{
-  TargetInfo nearest;
-  nearest.distance = std::numeric_limits<double>::infinity();
-
-  for (std::size_t i = 0; i < impl_->waypoints.size(); ++i) {
-    const auto& waypoint = impl_->waypoints[i];
-    const double distance = std::hypot(waypoint.x - pose.x, waypoint.y - pose.y);
-    if (distance < nearest.distance) {
-      nearest.index = i;
-      nearest.distance = distance;
-    }
-  }
-
-  std::size_t target_index = nearest.index;
-  double target_distance = nearest.distance;
-  while (target_distance < impl_->lookahead_m) {
-    target_index = (target_index + 1) % impl_->waypoints.size();
-    const auto& waypoint = impl_->waypoints[target_index];
-    target_distance = std::hypot(waypoint.x - pose.x, waypoint.y - pose.y);
-    if (target_index == nearest.index) {
-      break;
-    }
-  }
-
-  const auto& target_waypoint = impl_->waypoints[target_index];
-  TargetInfo target;
-  target.index = target_index;
-  target.distance = target_distance;
-  target.pose.header.frame_id = "map";
-  target.pose.pose.position.x = target_waypoint.x;
-  target.pose.pose.position.y = target_waypoint.y;
-  return target;
 }
 
 morai_msgs::CtrlCmd GpsTracker::Stanley(const geometry_msgs::Pose2D& pose,
                                         double current_velocity_kph,
                                         TargetInfo& target)
 {
-  target = FindTarget(pose);
+  const auto& wp = impl_->waypoints;
+  const std::size_t n = wp.size();
 
-  double path_theta = 0.0;
-  const auto& target_waypoint = impl_->waypoints[target.index];
-  if (target_waypoint.has_heading) {
-    path_theta = target_waypoint.heading_rad;
-  } else if (target.index + 1 < impl_->waypoints.size()) {
-    const auto& curr = impl_->waypoints[target.index];
-    const auto& next = impl_->waypoints[target.index + 1];
-    path_theta = std::atan2(next.y - curr.y, next.x - curr.x);
-  } else {
-    const auto& prev = impl_->waypoints[target.index - 1];
-    const auto& curr = impl_->waypoints[target.index];
-    path_theta = std::atan2(curr.y - prev.y, curr.x - prev.x);
+  if (!impl_->seeded) {
+    double best = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < n; ++i) {
+      const double d = std::hypot(wp[i].x - pose.x, wp[i].y - pose.y);
+      if (d < best) {
+        best = d;
+        impl_->cur = i;
+      }
+    }
+    impl_->seeded = true;
   }
+
+  // windowed monotonic nearest
+  std::size_t near = impl_->cur;
+  double best_d2 = std::numeric_limits<double>::infinity();
+  const std::size_t hi = std::min(n, impl_->cur + kNearestWindow);
+  for (std::size_t i = impl_->cur; i < hi; ++i) {
+    const double dx = wp[i].x - pose.x;
+    const double dy = wp[i].y - pose.y;
+    const double d2 = dx * dx + dy * dy;
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      near = i;
+    }
+  }
+  impl_->cur = near;
+
+  // signed cte at nearest segment (cte>0 = 경로 우측)
+  std::size_t a_i = near, b_i = near + 1;
+  if (b_i >= n) {
+    a_i = near - 1;
+    b_i = near;
+  }
+  const double dx = wp[b_i].x - wp[a_i].x;
+  const double dy = wp[b_i].y - wp[a_i].y;
+  const double seg_len = std::max(std::hypot(dx, dy), 1e-6);
+  const double cross_track_error =
+      (dy * (pose.x - wp[a_i].x) - dx * (pose.y - wp[a_i].y)) / seg_len;
+
+  // heading preview: arc-length lookahead 앞 지점의 접선
+  std::size_t pv = near;
+  while (pv + 1 < n && impl_->s[pv] - impl_->s[near] < impl_->lookahead_m) {
+    ++pv;
+  }
+  std::size_t p_i = pv, q_i = pv + 1;
+  if (q_i >= n) {
+    p_i = pv - 1;
+    q_i = pv;
+  }
+  const double path_theta = std::atan2(wp[q_i].y - wp[p_i].y, wp[q_i].x - wp[p_i].x);
 
   const double pose_theta = headingToRad(pose.theta);
   const double heading_error = normalizeAngle(path_theta - pose_theta);
-  const double target_theta = std::atan2(target.pose.pose.position.y - pose.y,
-                                         target.pose.pose.position.x - pose.x) -
-                              path_theta;
-  const double cross_track_error = target.distance * std::sin(target_theta);
-  const double target_velocity_mps = std::max(impl_->target_velocity_kph / 3.6, 0.1);
-  const double steering_angle =
-      heading_error + std::atan2(impl_->stanley_gain * cross_track_error, target_velocity_mps);
+  const double v_mps = std::max(current_velocity_kph, 0.0) / 3.6;
+  double steering_angle =
+      heading_error + std::atan2(impl_->stanley_gain * cross_track_error, impl_->k_soft + v_mps);
+  steering_angle = clamp(steering_angle, -kMaxSteerRad, kMaxSteerRad);
 
   const ros::Time now = ros::Time::now();
-  const double speed_error = impl_->target_velocity_kph - current_velocity_kph;
-  double accel_cmd = impl_->pid_kp * speed_error;
+  double dt = 0.1;
+  if (!impl_->prev_time.isZero()) {
+    dt = std::max((now - impl_->prev_time).toSec(), 1e-3);
+  }
 
-  if (!impl_->pid_prev_time.isZero()) {
-    const double dt = std::max((now - impl_->pid_prev_time).toSec(), 1e-3);
-    impl_->pid_integral += speed_error * dt;
-    impl_->pid_integral = clamp(impl_->pid_integral, -100.0, 100.0);
+  // 조향 슬루 제한
+  const double ds_max = kSteerRate * dt;
+  steering_angle = clamp(steering_angle, impl_->prev_steer - ds_max, impl_->prev_steer + ds_max);
+  impl_->prev_steer = steering_angle;
+
+  // 종방향: 프로파일 governed 목표속도에 PID
+  const double v_ref = std::min(impl_->target_velocity_kph, impl_->profile_kph[near]);
+  const double speed_error = v_ref - current_velocity_kph;
+  double accel_cmd = impl_->pid_kp * speed_error;
+  if (!impl_->prev_time.isZero()) {
+    impl_->pid_integral = clamp(impl_->pid_integral + speed_error * dt, -100.0, 100.0);
     const double derivative = (speed_error - impl_->pid_prev_error) / dt;
     accel_cmd += impl_->pid_ki * impl_->pid_integral + impl_->pid_kd * derivative;
   }
-
   impl_->pid_prev_error = speed_error;
-  impl_->pid_prev_time = now;
-
-  const double max_steer_rad = 40.0 * M_PI / 180.0;
+  impl_->prev_time = now;
 
   morai_msgs::CtrlCmd command;
   command.longlCmdType = 1;
   command.accel = clamp(accel_cmd, 0.0, 1.0);
   command.brake = speed_error < -1.0 ? clamp(-accel_cmd, 0.0, 1.0) : 0.0;
-  const double front = clamp(steering_angle, -max_steer_rad, max_steer_rad);
-  command.front_steer = front;
-  command.steering = front / max_steer_rad;  // 정규화 [-1,1]. MORAI 25.S4는 steering 필드를 봄(front_steer 무시)
+  command.front_steer = steering_angle;
+  command.steering = steering_angle / kMaxSteerRad;  // 정규화 [-1,1]. MORAI 25.S4는 steering 필드를 봄
   command.rear_steer = 0.0;
-  command.velocity = impl_->target_velocity_kph;
+  command.velocity = v_ref;
   command.acceleration = 0.0;
 
+  target.index = pv;
+  target.distance = std::hypot(wp[pv].x - pose.x, wp[pv].y - pose.y);
+  target.pose.header.frame_id = "map";
+  target.pose.pose.position.x = wp[pv].x;
+  target.pose.pose.position.y = wp[pv].y;
+
   ROS_INFO_THROTTLE(1.0,
-                    "ad_tracker target=%zu dist=%.2f cte=%.2f heading_err=%.2fdeg steer=%.3frad accel=%.3f",
-                    target.index,
-                    target.distance,
+                    "ad_tracker near=%zu cte=%.2f head_err=%.1fdeg v_ref=%.1f steer=%.3frad accel=%.2f",
+                    near,
                     cross_track_error,
                     heading_error * 180.0 / M_PI,
+                    v_ref,
                     command.front_steer,
                     command.accel);
   return command;

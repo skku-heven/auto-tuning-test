@@ -63,6 +63,17 @@ def test_run_balanced_catches_up_lagging_sampler():
     assert res["added"]["gp"] > res["added"]["tpe"]
 
 
+def test_run_balanced_respects_per_study_targets():
+    # GP 캡(dict target): gp는 3에서 멈추고 tpe만 6까지
+    st = _studies()
+    obj = auto_tune_ab.build_objective(FakeRunner(), seg=400, timeout=120, out_dir=None)
+    budget = {"alive": lambda: True, "time_left": lambda: 100.0}
+    res = auto_tune_ab.run_balanced(st, obj, target_trials={"tpe": 6, "gp": 3}, budget=budget)
+    assert res["target_reached"] is True
+    assert len(st["tpe"].trials) == 6
+    assert len(st["gp"].trials) == 3
+
+
 def test_objective_sets_attrs_and_returns_float():
     st = _studies(); study = st["tpe"]
     obj = auto_tune_ab.build_objective(FakeRunner(), seg=400, timeout=120, out_dir=None)

@@ -91,19 +91,23 @@ def trial_count(study):
 
 
 def run_balanced(studies, objective, target_trials, budget):
-    """Run the currently-behind sampler until every study reaches target_trials.
+    """Run the currently-behind sampler until every study reaches its target.
 
+    target_trials: int(모든 스터디 동일) 또는 {study_name: target} dict.
+    GP는 trial 수가 커지면 재학습 비용이 급증(≈O(n³))하므로 dict로 낮은 캡을 주는 용도.
     This resumes naturally from Optuna storage. If TPE has 590 trials and GP has
     20, GP is selected until the counts match, then the two alternate.
     """
     import ab_core
     alive = budget["alive"]; time_left = budget["time_left"]
     names = list(studies)
+    if not isinstance(target_trials, dict):
+        target_trials = {name: target_trials for name in names}
     added = {name: 0 for name in names}
 
     while alive() and time_left() > 0:
         counts = {name: trial_count(studies[name]) for name in names}
-        pending = [name for name in names if counts[name] < target_trials]
+        pending = [name for name in names if counts[name] < target_trials[name]]
         if not pending:
             break
         name = min(pending, key=lambda n: (counts[n], names.index(n)))
@@ -114,7 +118,7 @@ def run_balanced(studies, objective, target_trials, budget):
     stats = {name: ab_core.study_stats(studies[name]) for name in names}
     return {
         "target_trials": target_trials,
-        "target_reached": all(c >= target_trials for c in counts.values()),
+        "target_reached": all(counts[n] >= target_trials[n] for n in names),
         "counts": counts,
         "added": added,
         "stats": stats,
@@ -125,25 +129,41 @@ def top_params(study, k, ab_core):
     fs = sorted(ab_core.feasible_trials(study), key=lambda t: t.value)[:k]
     return [
         {**{name: t.user_attrs[name] for name, _, _, _ in ab_core.PARAM_SPECS},
-         "pid_kp": ab_core.PID_KP}
+         "pid_ki": ab_core.PID_KI, "pid_kd": ab_core.PID_KD}
         for t in fs
     ]
 
 
+def _drive_kwargs(runner, seg, timeout):
+    """runner.drive가 seg/timeout override를 지원하면(TrackerRunner) 넘김."""
+    import inspect
+    params = inspect.signature(runner.drive).parameters
+    kw = {}
+    if "seg" in params: kw["seg"] = seg
+    if "timeout" in params: kw["timeout"] = timeout
+    return kw
+
+
 def final_remeasure(runner, top_params, repeats, seg, timeout, out_dir):
+    """top-K 재측정. 대회 1순위=완주라 seg를 풀코스로 주는 걸 권장.
+    feasible = 완주 AND max_cte≤CTE_MAX (탐색 때와 동일 기준으로 재검증)."""
+    import ab_core
+    kw = _drive_kwargs(runner, seg, timeout)
     results = []
     for i, p in enumerate(top_params):
-        times = []; feas = 0
+        times = []; feas = 0; worst_cte = 0.0
         for r in range(repeats):
             if not (runner.reset_and_arm() or runner.reset_and_arm()):
                 continue
             save = os.path.join(out_dir, f"final_{i}_{r}.csv") if out_dir else None
-            m = runner.drive(p, save)
+            m = runner.drive(p, save, **kw)
             if m is None:
                 continue
-            if m["completed"]:
+            worst_cte = max(worst_cte, m.get("max_cte", 0.0))
+            if m["completed"] and m.get("max_cte", 1e9) <= ab_core.CTE_MAX:
                 feas += 1; times.append(m["time_s"])
-        results.append({"params": p, "feasible": feas, "repeats": repeats,
+        results.append({"params": p, "feasible": feas, "repeats": repeats, "seg": seg,
+                        "worst_max_cte": round(worst_cte, 2),
                         "mean_time": round(sum(times) / len(times), 2) if times else None,
                         "worst_time": max(times) if times else None})
     results.sort(key=lambda r: (-r["feasible"], r["mean_time"] if r["mean_time"] is not None else 1e9))
@@ -163,6 +183,14 @@ def main():
                     help="winner: smoke 후 승자만 계속. balanced: 둘 다 target trial까지 계속.")
     ap.add_argument("--target-trials", type=int, default=1000,
                     help="--mode balanced에서 sampler별 누적 목표 trial 수")
+    ap.add_argument("--gp-target", type=int, default=250,
+                    help="GP 스터디 캡(재학습 비용 O(n³) — TPE보다 낮게). balanced에서만 적용")
+    ap.add_argument("--runner", choices=("tracker", "live"), default="tracker",
+                    help="tracker: C++ ad_tracker relaunch 평가(기본). live: 구 Python 컨트롤러")
+    ap.add_argument("--final-seg", type=float, default=None,
+                    help="final_remeasure 세그먼트[m]. 기본=풀코스(경로 전장-5m)")
+    ap.add_argument("--final-timeout", type=float, default=420.0,
+                    help="final_remeasure trial 타임아웃[s] (풀코스 2km 기준)")
     ap.add_argument("--forever", action="store_true", help="멈출 때까지 무제한(deadline 없음)")
     ap.add_argument("--storage", default=None,
                     help="Optuna storage URL. 미지정 시 env OPTUNA_STORAGE, 그것도 없으면 sqlite. "
@@ -188,15 +216,23 @@ def main():
         s_arr.append(s_arr[-1] + math.hypot(track[i][0] - track[i - 1][0], track[i][1] - track[i - 1][1]))
 
     rospy.init_node("auto_tune_ab", anonymous=True)
-    from live_runner import LiveRunner
-    runner = LiveRunner(track, s_arr, args.seg, args.timeout, START)
+    if args.runner == "tracker":
+        from tracker_runner import TrackerRunner
+        runner = TrackerRunner(track, s_arr, args.seg, args.timeout, START, CSV)
+        ver = "cpp_v6"   # C++ 컨트롤러 = 다른 목적함수 지형 → 스터디 절대 v4와 섞지 않음
+    else:
+        from live_runner import LiveRunner
+        runner = LiveRunner(track, s_arr, args.seg, args.timeout, START)
+        ver = "v4"
 
     sam = ab_core.make_samplers(args.seed)
     studies = {}
-    for name, sn in (("tpe", f"kcity_seg{int(args.seg)}_tpe_v4"), ("gp", f"kcity_seg{int(args.seg)}_gp_v4")):
+    for name in ("tpe", "gp"):
+        sn = f"kcity_seg{int(args.seg)}_{name}_{ver}"
         studies[name] = optuna.create_study(direction="minimize", study_name=sn,
             storage=storage, load_if_exists=True, sampler=sam[name])
     enqueue_warmstart(studies)
+    final_seg = args.final_seg if args.final_seg is not None else max(s_arr[-1] - 5.0, args.seg)
 
     if args.forever:
         budget = {"alive": lambda: not rospy.is_shutdown(), "time_left": lambda: float("inf")}
@@ -205,12 +241,14 @@ def main():
         budget = {"alive": lambda: not rospy.is_shutdown(), "time_left": lambda: deadline - time.time()}
     objective = build_objective(runner, args.seg, args.timeout, OUT, budget)
     dl = "무제한(멈출때까지)" if args.forever else f"{args.hours}h"
-    print(f"[ab] mode={args.mode} seg={args.seg} smoke={args.smoke}/sampler "
-          f"target={args.target_trials} deadline={dl} storage={storage.split('://')[0]}",
+    print(f"[ab] runner={args.runner} mode={args.mode} seg={args.seg} smoke={args.smoke}/sampler "
+          f"target={args.target_trials}(gp≤{args.gp_target}) final_seg={final_seg:.0f} "
+          f"deadline={dl} storage={storage.split('://')[0]}",
           flush=True)
 
     if args.mode == "balanced":
-        res = run_balanced(studies, objective, args.target_trials, budget)
+        targets = {"tpe": args.target_trials, "gp": min(args.target_trials, args.gp_target)}
+        res = run_balanced(studies, objective, targets, budget)
         leader = ab_core.pick_winner(res["stats"])
         print(f"[ab] balanced target_reached={res['target_reached']} "
               f"counts={res['counts']} added={res['added']} leader={leader} "
@@ -221,7 +259,7 @@ def main():
             for name, study in studies.items():
                 finals[name] = final_remeasure(
                     runner, top_params(study, args.topk, ab_core),
-                    args.repeats, args.seg, args.timeout, OUT)
+                    args.repeats, final_seg, args.final_timeout, OUT)
         with open(os.path.join(OUT, "best_ab_balanced.json"), "w") as f:
             json.dump({"mode": "balanced", "leader": leader, **res,
                        "final": finals}, f, indent=2)
@@ -232,10 +270,10 @@ def main():
     res = run_ab(studies, objective, args.smoke, budget)
     print(f"[ab] winner={res['winner']} stats={res['stats']} full={res['n_full']}", flush=True)
 
-    # 재측정: 승자 feasible 중 목적값(작을수록 좋음) 상위 topk
+    # 재측정: 승자 feasible 중 목적값(작을수록 좋음) 상위 topk — 풀코스로 재검증
     ws = studies[res["winner"]]
     finals = final_remeasure(runner, top_params(ws, args.topk, ab_core),
-                             args.repeats, args.seg, args.timeout, OUT)
+                             args.repeats, final_seg, args.final_timeout, OUT)
     with open(os.path.join(OUT, "best_ab.json"), "w") as f:
         json.dump({"winner": res["winner"], "stats": res["stats"], "final": finals}, f, indent=2)
     print(f"[ab] DONE. best={finals[0] if finals else None}", flush=True)

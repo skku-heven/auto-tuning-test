@@ -4,15 +4,17 @@ path-tracking 중심: 시간(주) + cte²(추종 보조) + overspeed penalty.
 제약(infeasible): 미완주 OR max_cte>CTE_MAX. 미완주는 연속 proxy(절벽 없음)."""
 import statistics
 
-PID_KP = 0.3
-# (name, low, high, log)  — target_velocity는 50kph 넘지 않게 상한 50
+# (name, low, high, log)  — target_velocity 상한 48: PID 오버슈트 마진(리밋 50 절대 안 넘게)
 PARAM_SPECS = [
     ("lookahead", 1.5, 5.5, False),
-    ("target_velocity_kph", 25.0, 50.0, False),
+    ("target_velocity_kph", 25.0, 48.0, False),
     ("gain_k", 0.4, 3.0, True),
     ("k_soft", 0.5, 3.0, False),
     ("a_lat", 1.0, 3.0, False),
+    ("pid_kp", 0.1, 0.8, False),
 ]
+PID_KI = 0.0    # 고정: 정상상태 오차는 감수(와인드업 회피)
+PID_KD = 0.01   # 고정: 작은 댐핑만
 
 # --- 목적/제약 튜닝 상수 (여기만 바꾸면 됨) ---
 CTE_MAX = 1.0          # m. max_cte가 이 값 초과하면 즉시 infeasible(하드 제약)
@@ -20,14 +22,16 @@ V_LIMIT = 50.0         # kph. 이 속도 초과 시간(overspeed_s)에 penalty
 W_CTE = 50.0           # mean(cte²) 가중 — 추종 보조(시간 대비 부차)
 W_OVERSPEED = 5.0      # overspeed_s(초) 당 penalty — 50kph 초과 강하게 억제
 _PROXY_BASE = 2000.0   # 미완주 proxy 하한(어떤 feasible cost보다도 큼)
-# v3 seg400 완주기록 기반 6점(공격~중속, 다양한 basin)
+# v3 seg400 완주기록 기반 6점(공격~중속, 다양한 basin).
+# 주의: Python 컨트롤러 기준 기록 — C++ ad_tracker에선 완주 보장 없음(탐색 시드로만).
+# pid_kp=0.3(v3 고정값), 49.8은 새 상한 48 안으로 클램프.
 WARMSTART = [
-    {"lookahead": 4.26, "target_velocity_kph": 49.8, "gain_k": 2.77, "k_soft": 1.72, "a_lat": 2.84},
-    {"lookahead": 2.19, "target_velocity_kph": 37.4, "gain_k": 2.43, "k_soft": 0.58, "a_lat": 2.48},
-    {"lookahead": 4.19, "target_velocity_kph": 41.9, "gain_k": 2.03, "k_soft": 1.83, "a_lat": 2.54},
-    {"lookahead": 5.15, "target_velocity_kph": 42.6, "gain_k": 2.70, "k_soft": 0.99, "a_lat": 2.28},
-    {"lookahead": 3.71, "target_velocity_kph": 35.5, "gain_k": 1.13, "k_soft": 0.77, "a_lat": 1.27},
-    {"lookahead": 2.74, "target_velocity_kph": 30.0, "gain_k": 1.38, "k_soft": 2.53, "a_lat": 1.13},
+    {"lookahead": 4.26, "target_velocity_kph": 47.9, "gain_k": 2.77, "k_soft": 1.72, "a_lat": 2.84, "pid_kp": 0.3},
+    {"lookahead": 2.19, "target_velocity_kph": 37.4, "gain_k": 2.43, "k_soft": 0.58, "a_lat": 2.48, "pid_kp": 0.3},
+    {"lookahead": 4.19, "target_velocity_kph": 41.9, "gain_k": 2.03, "k_soft": 1.83, "a_lat": 2.54, "pid_kp": 0.3},
+    {"lookahead": 5.15, "target_velocity_kph": 42.6, "gain_k": 2.70, "k_soft": 0.99, "a_lat": 2.28, "pid_kp": 0.3},
+    {"lookahead": 3.71, "target_velocity_kph": 35.5, "gain_k": 1.13, "k_soft": 0.77, "a_lat": 1.27, "pid_kp": 0.3},
+    {"lookahead": 2.74, "target_velocity_kph": 30.0, "gain_k": 1.38, "k_soft": 2.53, "a_lat": 1.13, "pid_kp": 0.3},
 ]
 
 
@@ -35,7 +39,8 @@ def suggest_params(trial):
     p = {}
     for name, lo, hi, log in PARAM_SPECS:
         p[name] = trial.suggest_float(name, lo, hi, log=log)
-    p["pid_kp"] = PID_KP
+    p["pid_ki"] = PID_KI
+    p["pid_kd"] = PID_KD
     return p
 
 

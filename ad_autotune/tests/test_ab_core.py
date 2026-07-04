@@ -15,9 +15,10 @@ class FakeTrial:
 
 def test_param_specs_ranges():
     d = {n: (lo, hi, log) for n, lo, hi, log in ab_core.PARAM_SPECS}
-    assert d["target_velocity_kph"][:2] == (25.0, 50.0)   # 50 상한
+    assert d["target_velocity_kph"][:2] == (25.0, 48.0)   # 48 상한(50 리밋 오버슈트 마진)
     assert d["gain_k"][2] is True                          # log scale
     assert d["lookahead"][:2] == (1.5, 5.5)
+    assert d["pid_kp"][:2] == (0.1, 0.8)                   # 종방향 kp도 튜닝 대상
 
 
 def test_warmstart_within_ranges():
@@ -30,9 +31,11 @@ def test_warmstart_within_ranges():
 
 def test_suggest_params_uses_specs():
     t = FakeTrial(); p = ab_core.suggest_params(t)
-    assert set(p) == {"lookahead", "target_velocity_kph", "gain_k", "k_soft", "a_lat", "pid_kp"}
-    assert p["pid_kp"] == 0.3
+    assert set(p) == {"lookahead", "target_velocity_kph", "gain_k", "k_soft", "a_lat",
+                      "pid_kp", "pid_ki", "pid_kd"}
+    assert p["pid_ki"] == 0.0 and p["pid_kd"] == 0.01      # ki/kd 작게 고정
     assert ("gain_k", 0.4, 3.0, True) in t.calls
+    assert any(c[0] == "pid_kp" for c in t.calls)          # pid_kp는 suggest됨
 
 
 def test_objective_completed_is_time_plus_cte_and_overspeed():

@@ -7,7 +7,7 @@ set -u
 HOURS="${1:-forever}"; SMOKE="${2:-25}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 source /opt/ros/noetic/setup.bash
-source "$HOME/heven_common_test_ws/devel/setup.bash"
+source "$HOME/auto_tuning_ws/devel/setup.bash"   # 독립 ws (C++ ad_tracker 빌드본 포함)
 STOR_ARG=()
 [ -n "${OPTUNA_STORAGE:-}" ] && STOR_ARG=(--storage "$OPTUNA_STORAGE")
 
@@ -18,7 +18,8 @@ if [ "$FOREVER" = 1 ]; then
   echo "[forever] 무제한 모드 — 멈출 때까지. (tmux kill-session -t tuning 로 정지)"
   while true; do
     echo "[forever] (re)start $(date '+%H:%M:%S')"
-    PYTHONNOUSERSITE=0 python3 "$HERE/auto_tune_ab.py" --forever --seg 400 --timeout 120 --smoke "$SMOKE" "${STOR_ARG[@]}" || true
+    PYTHONNOUSERSITE=0 python3 "$HERE/auto_tune_ab.py" --forever --mode balanced \
+      --runner tracker --seg 400 --timeout 120 --smoke "$SMOKE" "${STOR_ARG[@]}" || true
     sleep 10
   done
 else
@@ -26,7 +27,8 @@ else
   while [ "$(date +%s)" -lt "$END" ]; do
     LEFT=$(( END - $(date +%s) )); H=$(echo "scale=3; $LEFT/3600" | bc)
     echo "[forever] restart, ${H}h left"
-    PYTHONNOUSERSITE=0 python3 "$HERE/auto_tune_ab.py" --hours "$H" --seg 400 --timeout 120 --smoke "$SMOKE" "${STOR_ARG[@]}" || true
+    PYTHONNOUSERSITE=0 python3 "$HERE/auto_tune_ab.py" --hours "$H" --mode balanced \
+      --runner tracker --seg 400 --timeout 120 --smoke "$SMOKE" "${STOR_ARG[@]}" || true
     sleep 10
   done
   echo "[forever] deadline reached"
